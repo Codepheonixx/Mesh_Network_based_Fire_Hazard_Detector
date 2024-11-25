@@ -1,105 +1,36 @@
-//*******************************
-//This is the implementation of the nodes for communicating and exchanging info with each other.
-//*******************************
-
-
-//importing painlessMesh library and defining passwords and port for mesh networking
 #include "painlessMesh.h"
-#include <ESP8266WiFi.h>    //For esp8266 wifi
-#include <ArduinoOTA.h>     //For OTA support
-#include <ArduinoJson.h>    //For JSON message
+#include <ESP8266WiFi.h>
+#include <ArduinoJson.h>
 
-const char* ssid = "GODGIFTED";  // Change to your WiFi Network name
-const char* password = "ssgrp1234";
+#define MESH_PREFIX "Fire_Gas_Detector"
+#define MESH_PASSWORD "saveslifefromfire"
+#define MESH_PORT 5555
 
-#define  MESH_PREFIX    "Fire_Gas_Detector"
-#define  MESH_PASSWORD  "saveslifefromfire"
-#define  MESH_PORT      5555
+const int firepin = D5;  // Fire sensor pin
+const int gaspin = D2;   // Gas sensor pin 
+const int outpin = D6;   // Alert output pin
 
-const int firepin = 2;
-const int gaspin = A0;
-const int outpin = 4;
-
-// Adding Scheduler for personal tasks
 Scheduler myScheduler;
 painlessMesh mesh;
-
-// Variable to store gateway node ID
-uint32_t gatewayNodeId = 0;
-
-// Creating tasks for scheduled duration
+uint32_t gatewayNodeId = 0;  // Gateway node ID
+bool manualReset = false;    // Manual reset flag
 
 void sendData();
 void readSensor();
+void checkConnections();
 
-Task taskSendData(TASK_SECOND * 1 , TASK_FOREVER, &sendData);
-Task taskReadSensors(TASK_MILLISECOND * 100 , TASK_FOREVER, &readSensor);
+Task taskSendData(TASK_SECOND * 2, TASK_FOREVER, &sendData);
+Task taskReadSensors(TASK_MILLISECOND * 100, TASK_FOREVER, &readSensor);
+Task taskCheckConnections(TASK_SECOND * 5, TASK_FOREVER, &checkConnections);
 
-// Setting the task which includes reading sensors
-void sendData(){
-  if (gatewayNodeId != 0) {
-    //Read IR sensor
-    short firesensor = digitalRead(firepin);
-
-    //Read Gas sensor
-    short gassensor = analogRead(outpin);
-
-    //Create JSON object
-    StaticJsonDocument<200> jsonDat;
-    jsonDat["firesensor"] = firesensor;
-    jsonDat["gassensor"] = gassensor;
-
-    //Serializing JSON to string
-    String jsonString;
-    serializeJson(jsonDat, jsonString);
-
-    // Send data to gateway node
-    mesh.sendSingle(gatewayNodeId, jsonString);
-    taskSendData.setInterval( random( TASK_SECOND * 1, TASK_SECOND * 3 ));
-  }
-}
-
-//Setting the task for reading sensors
-void readSensor(){
-  //For turning buzzer and led
-  if(digitalRead(firepin) == HIGH || analogRead(gaspin) > 200){
-    digitalWrite(outpin, HIGH); 
-  }
-}
-
-//To receive reset signal
-void receivedCallback(uint32_t from, String &msg) { 
-  if (msg.startsWith("GatewayID:")) { 
-    gatewayNodeId = msg.substring(10).toInt(); 
-    Serial.printf("Gateway node ID received: %u\n", gatewayNodeId);
-  }
-
-  else if(msg == "Reset"){
-    Serial.println("Reset button triggered.");
-    digitalWrite(outpin, LOW);
-  }
-
-  else{
-    // Do nothing.
-  }; 
-}
-
-//To check new connection
-void newConnectionCallback(uint32_t nodeId) {
-    Serial.printf("--> startHere: New Connection, nodeId = %u\n", nodeId);
-}
-
-//To see change in connection
-void changedConnectionCallback() {
-  Serial.printf("Changed connections\n");
-}
-
-void setup(){
+void setup() {
   Serial.begin(115200);
-
-  // Connects to WiFi
-  OTAhandle();
-  //Initialise mesh network and user
+  WiFi.mode(WIFI_AP_STA);    // Required for painlessMesh
+  pinMode(firepin, INPUT);
+  pinMode(gaspin, INPUT);
+  pinMode(outpin, OUTPUT);
+  
+  // Initialize mesh network
   mesh.init(MESH_PREFIX, MESH_PASSWORD, &myScheduler, MESH_PORT);
   mesh.onReceive(&receivedCallback);
   mesh.onNewConnection(&newConnectionCallback);
@@ -107,23 +38,73 @@ void setup(){
 
   myScheduler.addTask(taskSendData);
   myScheduler.addTask(taskReadSensors);
+  myScheduler.addTask(taskCheckConnections);
+
   taskSendData.enable();
-
+  taskReadSensors.enable();
+  taskCheckConnections.enable();
 }
 
-void loop(){
-  ArduinoOTA.handle();    // Handles a code update request
-  mesh.update();          //Update the mesh network
-  myScheduler.execute();  // Executes the task as per the user
+void loop() {
+  mesh.update();
+  myScheduler.execute();
 }
 
-void OTAhandle(){
-  WiFi.begin(ssid, password);
+void sendData() {
+  if (gatewayNodeId != 0) {
+    short firesensor = digitalRead(firepin);
+    short gassensor = digitalRead(gaspin);
 
-  // Ensure WiFi is connected
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    StaticJsonDocument<200> jsonDat;
+    jsonDat["room"] = 1;
+    jsonDat["firesensor"] = firesensor;
+    jsonDat["gassensor"] = gassensor;
+
+    String jsonString;
+    serializeJson(jsonDat, jsonString);
+    mesh.sendSingle(gatewayNodeId, jsonString);
+
+    Serial.println("Data sent: " + jsonString);
   }
-  
-  ArduinoOTA.begin();  
+}
+
+void readSensor() {
+  if (!manualReset) {
+    if (digitalRead(firepin) == HIGH || digitalRead(gaspin) == HIGH) {
+      digitalWrite(outpin, HIGH);
+    } else {
+      digitalWrite(outpin, LOW);
+    }
+  }
+}
+
+void checkConnections() {
+  auto nodes = mesh.getNodeList();  // Get a list of connected nodes
+  if (nodes.size() == 0) {
+    Serial.println("No active nodes found in the mesh network.");
+  } else {
+    Serial.printf("Active nodes: %u\n", nodes.size());
+  }
+}
+
+void receivedCallback(uint32_t from, String &msg) {
+  if (msg.startsWith("GatewayID:")) {
+    gatewayNodeId = msg.substring(10).toInt();
+    Serial.printf("Gateway node ID: %u\n", gatewayNodeId);
+  } else if (msg == "Reset") {
+    manualReset = true;
+    digitalWrite(outpin, LOW);
+    Serial.println("Manual reset activated.");
+  } else if (msg == "ClearReset") {
+    manualReset = false;
+    Serial.println("Manual reset cleared.");
+  }
+}
+
+void newConnectionCallback(uint32_t nodeId) {
+  Serial.printf("New Connection: NodeID = %u\n", nodeId);
+}
+
+void changedConnectionCallback() {
+  Serial.println("Mesh connections changed.");
 }
