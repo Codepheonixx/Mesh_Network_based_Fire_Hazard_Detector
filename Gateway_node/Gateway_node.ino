@@ -18,8 +18,10 @@
 
 #define RESET_VPIN V1
 #define CLEAR_RESET_VPIN V2
+#define FIRE_PIN V7 
+#define GAS_PIN V8
 
-const short room = 2;      //Assign room number for the room you want the sensor to be installed
+const short room = 0;      //Assign room number for the room you want the sensor to be installed
 
 const short firepin = D5;  // Fire sensor pin
 const short gaspin = D2;   // Gas sensor pin
@@ -34,15 +36,16 @@ uint32_t nodeId;
 unsigned long lastCheckTime = 0;
 const unsigned long checkInterval = 5; // Check every 5 seconds
 
-std::vector<uint32_t> nodeList;    // List of connected nodes
-
 // Variables to track button states
 bool resetTriggered = false;
 bool clearResetTriggered = false;
 
 void readSensor();
-void checkConnections(); 
+void checkConnections();
+void sendRoomData();
+void checkBlynkConnection(); 
 
+Task taskSendRoomData(TASK_SECOND * 1 , TASK_FOREVER, &sendRoomData);
 Task taskReadSensors(TASK_MILLISECOND * 100, TASK_FOREVER, &readSensor);
 Task taskCheckConnections(TASK_SECOND * 5, TASK_FOREVER, &checkConnections);
 Task taskSendMessage(TASK_MILLISECOND * 50, TASK_FOREVER, []() {
@@ -60,10 +63,31 @@ Task taskSendMessage(TASK_MILLISECOND * 50, TASK_FOREVER, []() {
   }
 });
 
+void sendRoomData(){
+
+  Serial.print("Room 0");
+
+  if(digitalRead(firepin) == HIGH){
+    Serial.print("  firesensor 1");
+    Blynk.virtualWrite(FIRE_PIN, 1);
+  } else{
+    Serial.print("  firesensor 0");
+    Blynk.virtualWrite(FIRE_PIN, 0);
+  }
+  if(digitalRead(gaspin) == HIGH){
+    Serial.println("  gassensor 1");
+    Blynk.virtualWrite(GAS_PIN, 1);
+  } else{
+    Serial.println("  gassensor 0");
+    Blynk.virtualWrite(GAS_PIN, 0);
+  }
+  taskSendRoomData.setInterval( random( TASK_SECOND * 2, TASK_SECOND * 5 ));
+}
+
 BLYNK_WRITE(RESET_VPIN) {
   short buttonState = param.asInt();  // Read button value (0 or 1)
-  if (buttonState == 1) {           // Button pressed
-    resetTriggered = true;          // Set flag to send RESET
+  if (buttonState == 1) {             // Button pressed
+    resetTriggered = true;            // Set flag to send RESET
     manualReset = true;
     digitalWrite(outpin, LOW);
     Serial.println("Manual reset activated.");
@@ -91,16 +115,15 @@ void checkConnections() {
   }
 
 void readSensor() {
-    if (!manualReset) {
-      if (digitalRead(firepin) == HIGH || digitalRead(gaspin) == HIGH) {
-        digitalWrite(outpin, HIGH);
-      } 
-      else {
-        digitalWrite(outpin, LOW);
-      }
+    if (manualReset) {
+    digitalWrite(outpin, LOW);
     } else {
-      digitalWrite(outpin, LOW);
+    if (digitalRead(firepin) == HIGH || digitalRead(gaspin) == HIGH) {
+        digitalWrite(outpin, HIGH);
+    } else {
+        digitalWrite(outpin, LOW);
     }
+  }
   }
 
 void receivedCallback( uint32_t from, String &msg ) {
@@ -120,10 +143,16 @@ void receivedCallback( uint32_t from, String &msg ) {
     handleReceivedData(from, msg);
   }
   else{
-    Serial.println("Received no json data.");
+    if (msg == "RESET") {
+    Serial.println("RESET message received via mesh.");
+    digitalWrite(outpin, LOW);
+    } else if (msg == "CLEAR_RESET") {
+    Serial.println("CLEAR_RESET message received via mesh.");
+    }
   }
-
 }
+
+
 void newConnectionCallback(uint32_t nodeId) {
   Serial.printf("New Connection: NodeID = %u\n", nodeId);
 }
@@ -153,11 +182,11 @@ void handleReceivedData(uint32_t from, String &msg){
 
     // Send data to Blynk
     if (room == 1) {
-      Blynk.virtualWrite(V1, firesensor); // Fire status to Virtual Pin V1
-      Blynk.virtualWrite(V2, gassensor); // Gas status to Virtual Pin V2
-    } else if (room == 2) {
       Blynk.virtualWrite(V3, firesensor); // Fire status to Virtual Pin V3
       Blynk.virtualWrite(V4, gassensor); // Gas status to Virtual Pin V4
+    } else if (room == 2) {
+      Blynk.virtualWrite(V5, firesensor); // Fire status to Virtual Pin V5
+      Blynk.virtualWrite(V6, gassensor); // Gas status to Virtual Pin V6
     }
 
     Serial.printf("Sent to Blynk -> room: %d, firesensor: %d, gassensor: %d\n", room, firesensor, gassensor);
@@ -209,14 +238,15 @@ void setup() {
   userScheduler.addTask(taskSendMessage);
   userScheduler.addTask(taskReadSensors);
   userScheduler.addTask(taskCheckConnections);
-  
+  userScheduler.addTask(taskSendRoomData);
+
   taskSendMessage.enable();
   taskReadSensors.enable();
   taskCheckConnections.enable();
+  taskSendRoomData.enable();
 }
-
 void loop(){
   mesh.update();
   Blynk.run();
   userScheduler.execute();
-}
+ }
