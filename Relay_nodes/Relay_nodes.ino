@@ -57,7 +57,8 @@ void sendMessage() {
     if (!manualReset) {
       if (digitalRead(firepin) == HIGH || digitalRead(gaspin) == HIGH) {
         digitalWrite(outpin, HIGH);
-      } else {
+      } 
+      else {
         digitalWrite(outpin, LOW);
       }
     }
@@ -74,7 +75,7 @@ void sendMessage() {
 
 // Needed for painless library
 void receivedCallback( uint32_t from, String &msg ) {
-  StaticJsonDocument<100> doc;
+  StaticJsonDocument<50> doc;
 
   DeserializationError error = deserializeJson(doc, msg);
 
