@@ -1,8 +1,8 @@
 #define BLYNK_PRINT Serial
 
-#define BLYNK_TEMPLATE_ID "TMPL3AuGYNuFp"
-#define BLYNK_TEMPLATE_NAME "Node Test"
-#define BLYNK_AUTH_TOKEN "mkI3iO_k8aWNfvEh447bDvvKG4CEa5tJ"
+#define BLYNK_TEMPLATE_ID "TMPL386asCXQ1"
+#define BLYNK_TEMPLATE_NAME "New Test"
+#define BLYNK_AUTH_TOKEN "BB9ncucYKEf1jreyQlk0oyyJLzYLl8Va"
 
 #include "painlessMesh.h"
 #include <ESP8266WiFi.h>
@@ -16,29 +16,129 @@
 #define WIFI_SSID "GODGIFTED"
 #define WIFI_PASSWORD "ssgrp1234"
 
+#define RESET_VPIN V1
+#define CLEAR_RESET_VPIN V2
+
+const short room = 2;      //Assign room number for the room you want the sensor to be installed
+
+const short firepin = D5;  // Fire sensor pin
+const short gaspin = D2;   // Gas sensor pin
+const short outpin = D6;   // Alert output pin
+
+bool manualReset = false;    // Manual reset flag
+
 Scheduler userScheduler;
 painlessMesh mesh;
 
 uint32_t nodeId;
 unsigned long lastCheckTime = 0;
-const unsigned long checkInterval = 10000; // Check every 10 seconds
+const unsigned long checkInterval = 5; // Check every 5 seconds
 
-void broadcastGatewayID();
+std::vector<uint32_t> nodeList;    // List of connected nodes
 
-Task taskBroadcastGateway(TASK_SECOND * 5, TASK_FOREVER, &broadcastGatewayID);
+// Variables to track button states
+bool resetTriggered = false;
+bool clearResetTriggered = false;
 
-void broadcastGatewayID() {
-  String msg = "GatewayID:" + String((unsigned long)nodeId);
-  mesh.sendBroadcast(msg);
-  Serial.println("Broadcasting Gateway ID...");
+void readSensor();
+void checkConnections(); 
+
+Task taskReadSensors(TASK_MILLISECOND * 100, TASK_FOREVER, &readSensor);
+Task taskCheckConnections(TASK_SECOND * 5, TASK_FOREVER, &checkConnections);
+Task taskSendMessage(TASK_MILLISECOND * 50, TASK_FOREVER, []() {
+  if (resetTriggered) {
+    // Broadcast "RESET" to the mesh network
+    mesh.sendBroadcast("RESET");
+    Serial.println("Broadcasting RESET");
+    resetTriggered = false; // Reset flag
+  } 
+  else if (clearResetTriggered) {
+    // Broadcast "CLEAR_RESET" to the mesh network
+    mesh.sendBroadcast("CLEAR_RESET");
+    Serial.println("Broadcasting CLEAR_RESET");
+    clearResetTriggered = false; // Reset flag
+  }
+});
+
+BLYNK_WRITE(RESET_VPIN) {
+  short buttonState = param.asInt();  // Read button value (0 or 1)
+  if (buttonState == 1) {           // Button pressed
+    resetTriggered = true;          // Set flag to send RESET
+    manualReset = true;
+    digitalWrite(outpin, LOW);
+    Serial.println("Manual reset activated.");
+  }
+  Blynk.virtualWrite(RESET_VPIN, 0);
 }
 
-void receivedCallback(uint32_t from, String &msg) {
-  Serial.printf("Message from %u: %s\n", from, msg.c_str());
+BLYNK_WRITE(CLEAR_RESET_VPIN) {
+  short buttonState = param.asInt();  // Read button value (0 or 1)
+  if (buttonState == 1) {             // Button pressed
+    clearResetTriggered = true;       // Set flag to send CLEAR_RESET
+    manualReset = false;
+    Serial.println("Manual reset cleared.");
+  }
+  Blynk.virtualWrite(CLEAR_RESET_VPIN, 0);
+}
 
+void checkConnections() {
+    auto nodes = mesh.getNodeList();  // Get a list of connected nodes
+    if (nodes.size() == 0) {
+      Serial.println("No active nodes found in the mesh network.");
+    } else {
+      Serial.printf("Active nodes: %u\n", nodes.size());
+    }
+  }
+
+void readSensor() {
+    if (!manualReset) {
+      if (digitalRead(firepin) == HIGH || digitalRead(gaspin) == HIGH) {
+        digitalWrite(outpin, HIGH);
+      } 
+      else {
+        digitalWrite(outpin, LOW);
+      }
+    } else {
+      digitalWrite(outpin, LOW);
+    }
+  }
+
+void receivedCallback( uint32_t from, String &msg ) {
   // Parse the JSON data
+  StaticJsonDocument<50> doc;
 
-  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, msg);
+  
+  if (!error){
+    short room = doc["room"];
+    bool fireSensor = doc["firesensor"];
+    bool gasSensor = doc["gassensor"];
+
+    Serial.printf("Room %d, Fire: %d, Gas: %d\n", room, fireSensor, gasSensor);
+
+    //Handles JSON and Blynk
+    handleReceivedData(from, msg);
+  }
+  else{
+    Serial.println("Received no json data.");
+  }
+
+}
+void newConnectionCallback(uint32_t nodeId) {
+  Serial.printf("New Connection: NodeID = %u\n", nodeId);
+}
+
+void changedConnectionCallback() {
+  Serial.printf("Changed connections\n");
+}
+
+void nodeTimeAdjustedCallback(int32_t offset) {
+    Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(),offset);
+}
+
+void handleReceivedData(uint32_t from, String &msg){
+  //Parse the JSON data
+  StaticJsonDocument<100> doc;
   DeserializationError error = deserializeJson(doc, msg);
   if (error) {
     Serial.print("Failed to parse JSON: ");
@@ -52,45 +152,32 @@ void receivedCallback(uint32_t from, String &msg) {
     short gassensor = doc["gassensor"];
 
     // Send data to Blynk
-    if(room == 1){
-      Blynk.virtualWrite(V1, firesensor); // Send Fire status to Virtual Pin V1
-      Blynk.virtualWrite(V2, gassensor);    // Send gas status to Virtual Pin V2
-    }
-    
-    else if(room == 2){
-      Blynk.virtualWrite(V3, firesensor); // Send Fire status to Virtual Pin V3
-      Blynk.virtualWrite(V4, gassensor);    // Send gas status to Virtual Pin V4
+    if (room == 1) {
+      Blynk.virtualWrite(V1, firesensor); // Fire status to Virtual Pin V1
+      Blynk.virtualWrite(V2, gassensor); // Gas status to Virtual Pin V2
+    } else if (room == 2) {
+      Blynk.virtualWrite(V3, firesensor); // Fire status to Virtual Pin V3
+      Blynk.virtualWrite(V4, gassensor); // Gas status to Virtual Pin V4
     }
 
     Serial.printf("Sent to Blynk -> room: %d, firesensor: %d, gassensor: %d\n", room, firesensor, gassensor);
   } else {
     Serial.println("JSON does not contain expected keys.");
   }
-
-}
-
-void newConnectionCallback(uint32_t nodeId) {
-  Serial.printf("New connection: Node ID = %u\n", nodeId);
-}
-
-void changedConnectionsCallback() {
-  Serial.println("Connections changed.");
-  size_t connectedNodes = mesh.getNodeList().size();
-  if (connectedNodes == 0) {
-    Serial.println("No nodes are connected.");
-  } else {
-    Serial.printf("%u node(s) connected.\n", connectedNodes);
-  }
 }
 
 void setup() {
   Serial.begin(115200);
+  pinMode(firepin, INPUT);
+  pinMode(gaspin, INPUT);
+  pinMode(outpin, OUTPUT);
 
   // Initialize mesh network
   mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
   mesh.onReceive(&receivedCallback);
   mesh.onNewConnection(&newConnectionCallback);
-  mesh.onChangedConnections(&changedConnectionsCallback);
+  mesh.onChangedConnections(&changedConnectionCallback);
+  mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
 
   nodeId = mesh.getNodeId();
   Serial.printf("Node ID: %u\n", nodeId);
@@ -112,26 +199,24 @@ void setup() {
 
   // Initialize Blynk without blocking
   Blynk.config(BLYNK_AUTH_TOKEN);
-  Blynk.connect();
+  while (!Blynk.connect()) {
+    delay(1000);
+    Serial.println("Connecting to Blynk...");
+  }
+  Serial.println("Connected to Blynk");
 
-  // Add and enable the broadcast task
-  userScheduler.addTask(taskBroadcastGateway);
-  taskBroadcastGateway.enable();
+  // Add and enable tasks
+  userScheduler.addTask(taskSendMessage);
+  userScheduler.addTask(taskReadSensors);
+  userScheduler.addTask(taskCheckConnections);
+  
+  taskSendMessage.enable();
+  taskReadSensors.enable();
+  taskCheckConnections.enable();
 }
 
-void loop() {
+void loop(){
   mesh.update();
-  userScheduler.execute();
   Blynk.run();
-
-  // Periodically check if nodes are connected
-  if (millis() - lastCheckTime > checkInterval) {
-    lastCheckTime = millis();
-    size_t connectedNodes = mesh.getNodeList().size();
-    if (connectedNodes == 0) {
-      Serial.println("No nodes are connected.");
-    } else {
-      Serial.printf("%u node(s) connected.\n", connectedNodes);
-    }
-  }
+  userScheduler.execute();
 }
