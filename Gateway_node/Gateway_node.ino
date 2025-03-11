@@ -1,8 +1,8 @@
 #define BLYNK_PRINT Serial
 
-#define BLYNK_TEMPLATE_ID "TMPL386asCXQ1"
+#define BLYNK_TEMPLATE_ID "<template_id>"
 #define BLYNK_TEMPLATE_NAME "New Test"
-#define BLYNK_AUTH_TOKEN "BB9ncucYKEf1jreyQlk0oyyJLzYLl8Va"
+#define BLYNK_AUTH_TOKEN "<authentication_token>"
 
 #include "painlessMesh.h"
 #include <ESP8266WiFi.h>
@@ -13,8 +13,8 @@
 #define MESH_PASSWORD "saveslifefromfire"
 #define MESH_PORT 5555
 
-#define WIFI_SSID "GODGIFTED"
-#define WIFI_PASSWORD "ssgrp1234"
+#define WIFI_SSID "<WiFi_Name>"
+#define WIFI_PASSWORD "<Wifi_Password>"
 
 #define RESET_VPIN V1
 #define CLEAR_RESET_VPIN V2
